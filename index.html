@@ -2593,7 +2593,7 @@
      * - Apps Script: uses google.script.run
      * - GitHub Pages: uses the public Apps Script /exec URL
      *******************************************************/
-    const GIFTORIA_BACKEND_URL = "https://script.google.com/macros/s/AKfycbwA6_RrGImw5zbap9n9golBXOslOPpoA5Jan6xK5e_oss55tEj3DzILdmbSIsv_d1y9/exec";
+    const GIFTORIA_BACKEND_URL = "https://script.google.com/macros/s/AKfycbxNhhXPx3qGEBldf-NgGp5Lfr5YvwkQVcvQHfRE5i5wm4xUlUgfC0RI4-HvT6g2PwCu/exec";
     const GIFTORIA_SUBMISSION_TIMEOUT_MS = 90000;
     let giftoriaJsonpCounter = 0;
 
@@ -3393,7 +3393,7 @@
         }
       });
     }
-    const interestCategories = {
+    let interestCategories = {
   "Food & Drinks": [
     {
       "value": "Coffee & Tea",
@@ -4784,6 +4784,172 @@
     }
 
 
+
+    /*******************************************************
+     * GIFTORIA PUBLIC FORM V10.7 — ITEM_MASTER LIVE CONFIG
+     *
+     * ITEM_MASTER is the source of truth for currently available matching
+     * values. INTEREST_TAG_DETAILS is used only for category/card metadata.
+     * If the backend/config is unavailable, the form keeps its built-in values.
+     *******************************************************/
+
+    let giftoriaFormConfig = null;
+
+    function giftoriaNormalizeConfigList(values) {
+      const seen = new Set();
+      return (Array.isArray(values) ? values : [])
+        .map(function(value) { return String(value || "").trim(); })
+        .filter(function(value) {
+          if (!value || value.toLowerCase() === "any") return false;
+          const key = value.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+    }
+
+    function giftoriaReplaceSelectOptions(selectId, values, options) {
+      options = options || {};
+      const select = document.getElementById(selectId);
+      if (!select) return;
+
+      const current = String(select.value || "");
+      const list = giftoriaNormalizeConfigList(values);
+      if (!list.length) return;
+
+      const finalValues = list.slice();
+      if (options.includeOther && !finalValues.some(function(v) {
+        return v.toLowerCase() === "other";
+      })) {
+        finalValues.push("Other");
+      }
+
+      const placeholder = options.placeholder || "Select";
+      select.innerHTML =
+        '<option value="">' + escapeHtml(placeholder) + '</option>' +
+        finalValues.map(function(value) {
+          return '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>';
+        }).join("");
+
+      if (finalValues.indexOf(current) !== -1) {
+        select.value = current;
+      }
+    }
+
+    function giftoriaGiftTypeDisplay(value) {
+      const key = String(value || "").trim().toLowerCase();
+      if (key === "materialistic") {
+        return { title: "Practical", description: "Everyday essentials & useful items" };
+      }
+      if (key === "sentimental") {
+        return { title: "Heartfelt", description: "Personal touches & lasting memories" };
+      }
+      if (key.indexOf("mix") !== -1 || key === "mixed") {
+        return { title: "A Little of Both", description: "A blend of utility and emotion" };
+      }
+      if (key.indexOf("funny") !== -1 || key.indexOf("sarcastic") !== -1) {
+        return { title: "Funny / Sarcastic", description: "Playful, witty, and personality-led" };
+      }
+      return { title: value, description: "Choose this direction when it best fits the recipient." };
+    }
+
+    function giftoriaApplyGiftTypeConfig(values) {
+      const container = document.querySelector("#giftTypeFieldset .selection-grid");
+      if (!container) return;
+
+      const list = giftoriaNormalizeConfigList(values);
+      if (!list.length) return;
+
+      const current = getValue("giftType");
+      container.innerHTML = list.map(function(value) {
+        const display = giftoriaGiftTypeDisplay(value);
+        return (
+          '<label class="selection-card" data-value="' + escapeHtml(value) + '">' +
+            '<input type="radio" name="giftTypeChoice" value="' + escapeHtml(value) + '">' +
+            '<span class="selection-indicator" aria-hidden="true">✓</span>' +
+            '<span class="selection-content">' +
+              '<strong>' + escapeHtml(display.title) + '</strong>' +
+              '<span>' + escapeHtml(display.description) + '</span>' +
+            '</span>' +
+          '</label>'
+        );
+      }).join("");
+
+      if (list.indexOf(current) === -1) setHiddenValue("giftType", "");
+      setupSelectionCards("giftTypeChoice", "giftType", refreshInterestVisibility);
+    }
+
+    function giftoriaApplyInterestConfig(config) {
+      const categories = config && config.interestCategories;
+      if (!categories || typeof categories !== "object" || !Object.keys(categories).length) return;
+
+      interestCategories = categories;
+
+      const available = new Set();
+      Object.keys(interestCategories).forEach(function(category) {
+        (interestCategories[category] || []).forEach(function(item) {
+          if (item && item.value) available.add(String(item.value));
+        });
+      });
+
+      selectedInterests = new Set(
+        Array.from(selectedInterests).filter(function(value) {
+          return available.has(value);
+        })
+      );
+
+      activeCategory = "";
+      renderCategoryTabs();
+      renderInterests();
+      renderSelectedChips();
+      renderMainInterestOptions();
+    }
+
+    function giftoriaApplyPublicFormConfig(config) {
+      if (!config || config.success !== true) return;
+
+      giftoriaFormConfig = config;
+
+      giftoriaApplyInterestConfig(config);
+      giftoriaReplaceSelectOptions("relationshipToRecipient", config.relationships, {
+        includeOther: true,
+        placeholder: "Select relationship"
+      });
+      giftoriaReplaceSelectOptions("occasion", config.occasions, {
+        includeOther: true,
+        placeholder: "Select occasion"
+      });
+      giftoriaReplaceSelectOptions("unknownOccasion", config.occasions, {
+        includeOther: true,
+        placeholder: "Select occasion"
+      });
+      giftoriaReplaceSelectOptions("desiredFeeling", config.feelings, {
+        includeOther: false,
+        placeholder: "Select the feeling"
+      });
+      giftoriaApplyGiftTypeConfig(config.giftTypes);
+    }
+
+    function loadPublicFormConfigFromItemMaster() {
+      return giftoriaCallReadApi(
+        "form_config",
+        {},
+        "apiGetPublicFormConfig",
+        []
+      )
+        .then(function(response) {
+          if (response && response.success) {
+            giftoriaApplyPublicFormConfig(response);
+          }
+          return response;
+        })
+        .catch(function() {
+          // Safe fallback: keep the built-in questionnaire values.
+          return null;
+        });
+    }
+
+
     function loadInterestCardDetailsFromSheet() {
       giftoriaCallReadApi(
         "interest_details",
@@ -5155,7 +5321,9 @@
     renderInterests();
     renderSelectedChips();
     renderMainInterestOptions();
-    loadInterestCardDetailsFromSheet();
+    loadPublicFormConfigFromItemMaster().finally(function() {
+      loadInterestCardDetailsFromSheet();
+    });
     updateDescriptionCount();
     setupLandingInteractions();
     showPage(PAGE_INTRO);
