@@ -2594,7 +2594,7 @@
      * - GitHub Pages: uses the public Apps Script /exec URL
      *******************************************************/
     const GIFTORIA_BACKEND_URL = "https://script.google.com/macros/s/AKfycbxNhhXPx3qGEBldf-NgGp5Lfr5YvwkQVcvQHfRE5i5wm4xUlUgfC0RI4-HvT6g2PwCu/exec";
-    const GIFTORIA_PUBLIC_SYNC_BUILD = "2026-09-03-sheet-sync";
+    const GIFTORIA_PUBLIC_SYNC_BUILD = "2026-09-03-frame-transport-v2";
     const GIFTORIA_SUBMISSION_TIMEOUT_MS = 90000;
     let giftoriaJsonpCounter = 0;
 
@@ -2709,11 +2709,94 @@
         script.onerror = function() {
           cleanup();
           reject(new Error(
-            "Giftoria could not reach its backend. Confirm that the deployed Apps Script URL is public and ends in /exec."
+            "Giftoria could not load a legacy compatibility response."
           ));
         };
 
         document.head.appendChild(script);
+      });
+    }
+
+    function giftoriaFrameRequestId() {
+      return "gf_" + Date.now() + "_" + Math.random().toString(36).slice(2, 12);
+    }
+
+    function giftoriaIsBackendFrameOrigin(origin) {
+      try {
+        const parsed = new URL(String(origin || ""));
+        if (parsed.protocol !== "https:") return false;
+
+        const host = String(parsed.hostname || "").toLowerCase();
+        return host === "script.google.com" ||
+          host === "script.googleusercontent.com" ||
+          host.endsWith("-script.googleusercontent.com") ||
+          host.endsWith(".googleusercontent.com");
+      } catch (error) {
+        return false;
+      }
+    }
+
+    function giftoriaFrameRead(api, params, timeoutMs) {
+      return new Promise(function(resolve, reject) {
+        if (!giftoriaBackendIsConfigured()) {
+          reject(new Error("Giftoria's backend connection is missing."));
+          return;
+        }
+
+        const requestId = giftoriaFrameRequestId();
+        const frame = document.createElement("iframe");
+        const query = new URLSearchParams();
+        let finished = false;
+
+        query.set("api", api);
+        query.set("transport", "frame");
+        query.set("requestId", requestId);
+        query.set("origin", window.location.origin);
+        query.set("_", String(Date.now()));
+
+        Object.keys(params || {}).forEach(function(key) {
+          const value = params[key];
+          if (value !== undefined && value !== null) query.set(key, String(value));
+        });
+
+        frame.title = "Giftoria connection";
+        frame.setAttribute("aria-hidden", "true");
+        frame.tabIndex = -1;
+        frame.style.position = "fixed";
+        frame.style.left = "-10000px";
+        frame.style.top = "-10000px";
+        frame.style.width = "1px";
+        frame.style.height = "1px";
+        frame.style.opacity = "0";
+        frame.style.border = "0";
+        frame.style.pointerEvents = "none";
+
+        function cleanup() {
+          if (finished) return;
+          finished = true;
+          window.clearTimeout(timer);
+          window.removeEventListener("message", onMessage);
+          if (frame.parentNode) frame.parentNode.removeChild(frame);
+        }
+
+        function onMessage(event) {
+          if (!giftoriaIsBackendFrameOrigin(event.origin)) return;
+          const data = event.data || {};
+          if (data.type !== "giftoria-frame-response" || data.requestId !== requestId) return;
+          cleanup();
+          resolve(data.payload);
+        }
+
+        const timer = window.setTimeout(function() {
+          cleanup();
+          reject(new Error("Giftoria could not reach its backend. Please try again."));
+        }, Number(timeoutMs || 25000));
+
+        window.addEventListener("message", onMessage);
+        frame.src = GIFTORIA_BACKEND_URL +
+          (GIFTORIA_BACKEND_URL.indexOf("?") === -1 ? "?" : "&") +
+          query.toString();
+        document.body.appendChild(frame);
       });
     }
 
@@ -2725,7 +2808,9 @@
         );
       }
 
-      return giftoriaJsonp(api, params || {}, 20000);
+      // GitHub Pages reads through the Apps Script frame bridge.
+      // No JSONP/CORS dependency is used in the active public-form path.
+      return giftoriaFrameRead(api, params || {}, 30000);
     }
 
     function giftoriaDelay(milliseconds) {
@@ -2794,6 +2879,87 @@
       }, 1500);
     }
 
+    function giftoriaPostRequestViaFrame(formData) {
+      return new Promise(function(resolve, reject) {
+        if (!giftoriaBackendIsConfigured()) {
+          reject(new Error("Giftoria's backend connection is missing."));
+          return;
+        }
+
+        const requestId = giftoriaFrameRequestId();
+        const frameName = "giftoriaPostFrame_" + requestId;
+        const frame = document.createElement("iframe");
+        const form = document.createElement("form");
+        const body = giftoriaBuildSubmissionBody(formData);
+        let finished = false;
+
+        frame.name = frameName;
+        frame.title = "Giftoria secure submission";
+        frame.setAttribute("aria-hidden", "true");
+        frame.tabIndex = -1;
+        frame.style.position = "fixed";
+        frame.style.left = "-10000px";
+        frame.style.top = "-10000px";
+        frame.style.width = "1px";
+        frame.style.height = "1px";
+        frame.style.opacity = "0";
+        frame.style.border = "0";
+        frame.style.pointerEvents = "none";
+        document.body.appendChild(frame);
+
+        form.method = "POST";
+        form.action = GIFTORIA_BACKEND_URL;
+        form.target = frameName;
+        form.enctype = "application/x-www-form-urlencoded";
+        form.acceptCharset = "UTF-8";
+        form.style.position = "fixed";
+        form.style.left = "-10000px";
+        form.style.top = "-10000px";
+
+        body.set("transport", "frame");
+        body.set("requestId", requestId);
+        body.set("origin", window.location.origin);
+
+        body.forEach(function(value, key) {
+          const input = document.createElement("input");
+          input.type = "hidden";
+          input.name = key;
+          input.value = value;
+          form.appendChild(input);
+        });
+
+        function cleanup() {
+          if (finished) return;
+          finished = true;
+          window.clearTimeout(timer);
+          window.removeEventListener("message", onMessage);
+          if (form.parentNode) form.parentNode.removeChild(form);
+          window.setTimeout(function() {
+            if (frame.parentNode) frame.parentNode.removeChild(frame);
+          }, 500);
+        }
+
+        function onMessage(event) {
+          if (!giftoriaIsBackendFrameOrigin(event.origin)) return;
+          const data = event.data || {};
+          if (data.type !== "giftoria-frame-response" || data.requestId !== requestId) return;
+          cleanup();
+          resolve(data.payload);
+        }
+
+        const timer = window.setTimeout(function() {
+          cleanup();
+          reject(new Error(
+            "Giftoria could not confirm the submission. Your information is still here, so please try again."
+          ));
+        }, 45000);
+
+        window.addEventListener("message", onMessage);
+        document.body.appendChild(form);
+        form.submit();
+      });
+    }
+
     async function giftoriaPostRequestToBackend(formData) {
       if (!giftoriaBackendIsConfigured()) {
         throw new Error(
@@ -2848,10 +3014,10 @@
 
       while (Date.now() < deadline) {
         try {
-          const response = await giftoriaJsonp(
+          const response = await giftoriaFrameRead(
             "submission_status",
             { submissionToken: submissionToken },
-            20000
+            30000
           );
 
           if (response && response.success === true && response.requestId) {
@@ -2874,7 +3040,7 @@
       }
 
       throw lastConnectionError || new Error(
-        "Giftoria could not confirm the submission. Your answers are still here, so please tap Submit Request again. Duplicate protection prevents repeated requests."
+        "Giftoria could not confirm the request. Your answers are still here, so please try again."
       );
     }
 
@@ -2883,9 +3049,20 @@
         return giftoriaRunAppsScript("submitGiftoriaRequest", [formData]);
       }
 
-      await giftoriaCheckExternalBackend();
-      await giftoriaPostRequestToBackend(formData);
-      return giftoriaWaitForSubmission(formData.submissionToken);
+      if (!giftoriaBackendIsConfigured()) {
+        throw new Error("Giftoria's backend connection is missing.");
+      }
+
+      const token = String(formData && formData.submissionToken || "").trim();
+      if (!token) {
+        throw new Error("The secure submission token is missing.");
+      }
+
+      // Cross-site HTML form POST is allowed by browsers and does not require CORS.
+      // We then confirm the saved request through the frame bridge using the same token.
+      giftoriaPostRequestWithHiddenForm(formData);
+      await giftoriaDelay(700);
+      return giftoriaWaitForSubmission(token);
     }
 
     const PAGE_INTRO = 0;
