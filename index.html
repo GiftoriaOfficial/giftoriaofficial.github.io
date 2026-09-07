@@ -2594,7 +2594,7 @@
      * - GitHub Pages: uses the public Apps Script /exec URL
      *******************************************************/
     const GIFTORIA_BACKEND_URL = "https://script.google.com/macros/s/AKfycbxwA6_RrGImw5zbap9n9golBXOslOPpoA5Jan6xK5e_oss55tEj3DzILdmbSIsv_d1y9/exec";
-    const GIFTORIA_PUBLIC_SYNC_BUILD = "2026-09-07-submit-relay-v6-nested-iframe";
+    const GIFTORIA_PUBLIC_SYNC_BUILD = "2026-09-07-top-level-post-v7";
     const GIFTORIA_SUBMISSION_TIMEOUT_MS = 90000;
     let giftoriaJsonpCounter = 0;
 
@@ -3169,6 +3169,73 @@
     }
 
 
+    function giftoriaSubmitRequestViaTopLevelPost(formData) {
+      return new Promise(function(resolve, reject) {
+        if (!giftoriaBackendIsConfigured()) {
+          reject(new Error("Giftoria's backend connection is missing."));
+          return;
+        }
+
+        const token = String(formData && formData.submissionToken || "").trim();
+        if (!token) {
+          reject(new Error("The secure submission token is missing."));
+          return;
+        }
+
+        const form = document.createElement("form");
+        form.method = "POST";
+        form.action = GIFTORIA_BACKEND_URL;
+        form.target = "_self";
+        form.acceptCharset = "UTF-8";
+        form.style.display = "none";
+
+        const fields = {
+          api: "submit_request",
+          transport: "page",
+          submissionToken: token,
+          payload: JSON.stringify(formData)
+        };
+
+        Object.keys(fields).forEach(function(name) {
+          const input = document.createElement("input");
+          input.type = "hidden";
+          input.name = name;
+          input.value = fields[name];
+          form.appendChild(input);
+        });
+
+        document.body.appendChild(form);
+
+        try {
+          form.submit();
+        } catch (error) {
+          if (form.parentNode) form.parentNode.removeChild(form);
+          reject(new Error(
+            error && error.message
+              ? error.message
+              : "Giftoria could not open its secure submission page."
+          ));
+          return;
+        }
+
+        /*
+         * A successful call navigates away from GitHub to the Apps Script
+         * confirmation page, so this promise intentionally stays pending.
+         * If navigation is blocked for any reason, restore the button with
+         * a useful error instead of leaving the customer stuck indefinitely.
+         */
+        window.setTimeout(function() {
+          if (document.visibilityState === "visible") {
+            if (form.parentNode) form.parentNode.removeChild(form);
+            reject(new Error(
+              "Giftoria could not open its secure submission page. Please try again."
+            ));
+          }
+        }, 15000);
+      });
+    }
+
+
     async function giftoriaSubmitRequest(formData) {
       if (giftoriaHasAppsScriptBridge()) {
         return giftoriaRunAppsScript("submitGiftoriaRequest", [formData]);
@@ -3184,16 +3251,13 @@
       }
 
       /*
-       * GITHUB SUBMISSION TRANSPORT — V5
+       * GITHUB SUBMISSION TRANSPORT — V7
        *
-       * The public GitHub page opens the Apps Script submit_relay route
-       * through a normal GET iframe. The relay then calls the existing
-       * submitGiftoriaRequest(formData) inside Apps Script via google.script.run
-       * and returns the server result through postMessage.
-       *
-       * This avoids the cross-site browser POST that was failing before.
+       * Use a normal top-level HTML form POST to Apps Script.
+       * This is a standard browser navigation and does not depend on
+       * CORS, hidden iframes, third-party cookies, or postMessage.
        */
-      return giftoriaSubmitRequestViaRelay(formData);
+      return giftoriaSubmitRequestViaTopLevelPost(formData);
     }
 
     const PAGE_INTRO = 0;
