@@ -2594,7 +2594,7 @@
      * - GitHub Pages: uses the public Apps Script /exec URL
      *******************************************************/
     const GIFTORIA_BACKEND_URL = "https://script.google.com/macros/s/AKfycbxwA6_RrGImw5zbap9n9golBXOslOPpoA5Jan6xK5e_oss55tEj3DzILdmbSIsv_d1y9/exec";
-    const GIFTORIA_PUBLIC_SYNC_BUILD = "2026-09-07-submit-frame-v4-new-backend";
+    const GIFTORIA_PUBLIC_SYNC_BUILD = "2026-09-07-submit-relay-v5";
     const GIFTORIA_SUBMISSION_TIMEOUT_MS = 90000;
     let giftoriaJsonpCounter = 0;
 
@@ -3044,6 +3044,122 @@
       );
     }
 
+    function giftoriaSubmitRequestViaRelay(formData) {
+      return new Promise(function(resolve, reject) {
+        if (!giftoriaBackendIsConfigured()) {
+          reject(new Error("Giftoria's backend connection is missing."));
+          return;
+        }
+
+        const requestId = giftoriaFrameRequestId();
+        const frame = document.createElement("iframe");
+        const query = new URLSearchParams();
+        let finished = false;
+        let relayReady = false;
+
+        query.set("api", "submit_relay");
+        query.set("requestId", requestId);
+        query.set("origin", window.location.origin);
+        query.set("_", String(Date.now()));
+
+        frame.title = "Giftoria submission relay";
+        frame.setAttribute("aria-hidden", "true");
+        frame.tabIndex = -1;
+        frame.style.position = "fixed";
+        frame.style.left = "-10000px";
+        frame.style.top = "-10000px";
+        frame.style.width = "1px";
+        frame.style.height = "1px";
+        frame.style.opacity = "0";
+        frame.style.border = "0";
+        frame.style.pointerEvents = "none";
+
+        function cleanup() {
+          if (finished) return;
+          finished = true;
+          window.clearTimeout(timer);
+          window.removeEventListener("message", onMessage);
+          if (frame.parentNode) {
+            window.setTimeout(function() {
+              if (frame.parentNode) frame.parentNode.removeChild(frame);
+            }, 300);
+          }
+        }
+
+        function fail(message) {
+          cleanup();
+          reject(new Error(
+            message || "Giftoria could not complete the submission."
+          ));
+        }
+
+        function onMessage(event) {
+          if (!giftoriaIsBackendFrameOrigin(event.origin)) return;
+          if (event.source !== frame.contentWindow) return;
+
+          const data = event.data || {};
+          if (data.requestId !== requestId) return;
+
+          if (data.type === "giftoria-submit-relay-ready") {
+            if (relayReady) return;
+            relayReady = true;
+
+            try {
+              event.source.postMessage({
+                type: "giftoria-submit-relay-request",
+                requestId: requestId,
+                payload: formData
+              }, event.origin);
+            } catch (error) {
+              fail(
+                error && error.message
+                  ? error.message
+                  : "Giftoria could not send the request to its backend."
+              );
+            }
+            return;
+          }
+
+          if (data.type !== "giftoria-submit-relay-response") return;
+
+          cleanup();
+
+          const response = data.payload;
+
+          if (!response || response.success !== true || !response.requestId) {
+            const error = new Error(
+              response && response.message
+                ? response.message
+                : "The request could not be submitted."
+            );
+            error.giftoriaFinal = true;
+            reject(error);
+            return;
+          }
+
+          resolve(response);
+        }
+
+        const timer = window.setTimeout(function() {
+          fail(
+            relayReady
+              ? "Giftoria received the request but could not confirm the result. Please try again."
+              : "Giftoria could not open its secure submission connection. Please try again."
+          );
+        }, 45000);
+
+        window.addEventListener("message", onMessage);
+
+        frame.src =
+          GIFTORIA_BACKEND_URL +
+          (GIFTORIA_BACKEND_URL.indexOf("?") === -1 ? "?" : "&") +
+          query.toString();
+
+        document.body.appendChild(frame);
+      });
+    }
+
+
     async function giftoriaSubmitRequest(formData) {
       if (giftoriaHasAppsScriptBridge()) {
         return giftoriaRunAppsScript("submitGiftoriaRequest", [formData]);
@@ -3059,38 +3175,16 @@
       }
 
       /*
-       * PRIMARY GITHUB TRANSPORT
-       * Use the frame POST bridge that the Apps Script doPost() already supports.
-       * This sends transport=frame + requestId + origin and receives the server
-       * result back through postMessage.
+       * GITHUB SUBMISSION TRANSPORT — V5
+       *
+       * The public GitHub page opens the Apps Script submit_relay route
+       * through a normal GET iframe. The relay then calls the existing
+       * submitGiftoriaRequest(formData) inside Apps Script via google.script.run
+       * and returns the server result through postMessage.
+       *
+       * This avoids the cross-site browser POST that was failing before.
        */
-      try {
-        const directResponse = await giftoriaPostRequestViaFrame(formData);
-
-        if (directResponse && directResponse.success === true && directResponse.requestId) {
-          return directResponse;
-        }
-
-        if (directResponse && directResponse.success === false) {
-          const finalError = new Error(
-            directResponse.message || "The request could not be submitted."
-          );
-          finalError.giftoriaFinal = true;
-          throw finalError;
-        }
-      } catch (error) {
-        if (error && error.giftoriaFinal) throw error;
-        // Transport-only failure: fall back without losing the customer's answers.
-      }
-
-      /*
-       * FALLBACK
-       * Try no-CORS POST / hidden-form POST, then confirm by submission token.
-       * Duplicate submissions are safe because the backend deduplicates by token.
-       */
-      await giftoriaPostRequestToBackend(formData);
-      await giftoriaDelay(700);
-      return giftoriaWaitForSubmission(token);
+      return giftoriaSubmitRequestViaRelay(formData);
     }
 
     const PAGE_INTRO = 0;
