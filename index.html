@@ -2594,7 +2594,7 @@
      * - GitHub Pages: uses the public Apps Script /exec URL
      *******************************************************/
     const GIFTORIA_BACKEND_URL = "https://script.google.com/macros/s/AKfycbxwA6_RrGImw5zbap9n9golBXOslOPpoA5Jan6xK5e_oss55tEj3DzILdmbSIsv_d1y9/exec";
-    const GIFTORIA_PUBLIC_SYNC_BUILD = "2026-09-07-submit-relay-v5";
+    const GIFTORIA_PUBLIC_SYNC_BUILD = "2026-09-07-submit-relay-v6-nested-iframe";
     const GIFTORIA_SUBMISSION_TIMEOUT_MS = 90000;
     let giftoriaJsonpCounter = 0;
 
@@ -3095,8 +3095,13 @@
 
         function onMessage(event) {
           if (!giftoriaIsBackendFrameOrigin(event.origin)) return;
-          if (event.source !== frame.contentWindow) return;
 
+          /*
+           * Apps Script HTML Service may run the relay inside a nested
+           * googleusercontent iframe, so event.source is not necessarily
+           * the outer frame.contentWindow. The requestId + allowed Google
+           * origin checks are the correlation/security controls here.
+           */
           const data = event.data || {};
           if (data.requestId !== requestId) return;
 
@@ -3105,11 +3110,15 @@
             relayReady = true;
 
             try {
+              if (!event.source || typeof event.source.postMessage !== "function") {
+                throw new Error("Giftoria relay window is unavailable.");
+              }
+
               event.source.postMessage({
                 type: "giftoria-submit-relay-request",
                 requestId: requestId,
                 payload: formData
-              }, event.origin);
+              }, window.location.origin);
             } catch (error) {
               fail(
                 error && error.message
