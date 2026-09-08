@@ -3257,7 +3257,8 @@
        * This is a standard browser navigation and does not depend on
        * CORS, hidden iframes, third-party cookies, or postMessage.
        */
-      return giftoriaSubmitRequestViaTopLevelPost(formData);
+      await giftoriaPostRequestToBackend(formData);
+      return giftoriaWaitForSubmission(token);
     }
 
     const PAGE_INTRO = 0;
